@@ -192,7 +192,7 @@ static int compl_cb_send_oml_msg(struct msgb *l1_msg, void *data)
 }
 #endif
 
-int lchan_activate(struct gsm_lchan *lchan);
+int lchan_activate(struct gsm_lchan *lchan, enum gsm_lchan_state lchan_state);
 
 static int opstart_compl_cb(struct msgb *l1_msg, void *data)
 {
@@ -216,7 +216,7 @@ static int opstart_compl_cb(struct msgb *l1_msg, void *data)
 	if (mo->obj_class == NM_OC_CHANNEL && mo->obj_inst.trx_nr == 0 &&
 	    mo->obj_inst.ts_nr == 0) {
 		DEBUGP(DL1C, "====> trying to activate lchans of BCCH\n");
-		lchan_activate(&mo->bts->c0->ts[0].lchan[4]);
+		lchan_activate(&mo->bts->c0->ts[0].lchan[4], LCHAN_S_NONE);
 	}
 
 	/* Send OPSTART ack */
@@ -458,9 +458,35 @@ static const struct lchan_sapis sapis_for_lchan[_GSM_LCHAN_MAX] = {
 	},
 };
 
+static int mph_send_activate_req(struct gsm_lchan *lchan, struct sapi_cmd *cmd);
+
+static void sapi_queue_send_next(struct gsm_lchan *lchan)
+{
+	struct sapi_cmd *cmd;
+
+	if (llist_empty(&lchan->sapi_cmds)) {
+		LOGP(DL1C, LOGL_DEBUG,
+			"%s Got activation confirmation with empty queue\n",
+			gsm_lchan_name(lchan));
+		return;
+	}
+
+	cmd = llist_entry(lchan->sapi_cmds.next, struct sapi_cmd, entry);
+
+	switch (cmd->type) {
+		case SAPI_CMD_ACTIVATE:
+			mph_send_activate_req(lchan, cmd);
+			break;
+		default:
+			LOGP(DL1C, LOGL_NOTICE,
+				"Unimplemented command type %d\n", cmd->type);
+	}
+}
+
 static int lchan_act_compl_cb(struct msgb *l1_msg, void *data)
 {
-	struct gsm_time *time;
+	enum lchan_sapi_state status;
+	struct sapi_cmd *cmd;
 	struct gsm_lchan *lchan = data;
 	GsmL1_Prim_t *l1p = msgb_l1prim(l1_msg);
 	GsmL1_MphActivateCnf_t *ic = &l1p->u.mphActivateCnf;
@@ -474,31 +500,45 @@ static int lchan_act_compl_cb(struct msgb *l1_msg, void *data)
 	if (ic->status == GsmL1_Status_Success) {
 		DEBUGP(DL1C, "Successful activation of L1 SAPI %s on TS %u\n",
 			get_value_string(femtobts_l1sapi_names, ic->sapi), ic->u8Tn);
-		lchan_set_state(lchan, LCHAN_S_ACTIVE);
+		status = LCHAN_SAPI_S_ASSIGNED;
 	} else {
 		LOGP(DL1C, LOGL_ERROR, "Error activating L1 SAPI %s on TS %u: %s\n",
 			get_value_string(femtobts_l1sapi_names, ic->sapi), ic->u8Tn,
 			get_value_string(femtobts_l1status_names, ic->status));
-		lchan_set_state(lchan, LCHAN_S_NONE);
+		status = LCHAN_SAPI_S_ERROR;
 	}
 
-	switch (ic->sapi) {
-	case GsmL1_Sapi_Sdcch:
-	case GsmL1_Sapi_TchF:
-	case GsmL1_Sapi_TchH:
-		time = bts_model_get_time(lchan->ts->trx->bts);
-		if (lchan->state == LCHAN_S_ACTIVE) {
-			/* Hack: we simply only use one direction to
-			 * avoid sending two ACKs for one activate */
-			if (ic->dir == GsmL1_Dir_TxDownlink)
-				rsl_tx_chan_act_ack(lchan, time);
-		} else
-			rsl_tx_chan_act_nack(lchan, RSL_ERR_EQUIPMENT_FAIL);
-		break;
-	default:
-		break;
+	if (ic->dir & GsmL1_Dir_TxDownlink)
+		lchan->sapis_dl[ic->sapi] = status;
+	if (ic->dir & GsmL1_Dir_RxUplink)
+		lchan->sapis_ul[ic->sapi] = status;
+
+	if (llist_empty(&lchan->sapi_cmds)) {
+		LOGP(DL1C, LOGL_ERROR,
+				"%s Got activation confirmation with empty queue\n",
+				gsm_lchan_name(lchan));
+		goto err;
 	}
 
+	cmd = llist_entry(lchan->sapi_cmds.next, struct sapi_cmd, entry);
+	if (cmd->sapi != ic->sapi || cmd->dir != ic->dir) {
+		LOGP(DL1C, LOGL_ERROR,
+				"%s Confirmation mismatch (%d, %d) (%d, %d)\n",
+				gsm_lchan_name(lchan), cmd->sapi, cmd->dir,
+				ic->sapi, ic->dir);
+		goto err;
+	}
+
+	llist_del(&cmd->entry);
+	if (cmd->callback)
+		cmd->callback(lchan, ic->status);
+	talloc_free(cmd);
+	msgb_free(l1_msg);
+	sapi_queue_send_next(lchan);
+
+	return 0;
+
+err:
 	msgb_free(l1_msg);
 
 	return 0;
@@ -653,10 +693,12 @@ static void lchan2lch_par(GsmL1_LogChParam_t *lch_par, struct gsm_lchan *lchan)
 	}
 }
 
-static int mph_send_activate_req(struct gsm_lchan *lchan, int sapi, int dir)
+static int mph_send_activate_req(struct gsm_lchan *lchan, struct sapi_cmd *cmd)
 {
 	struct femtol1_hdl *fl1h = trx_femtol1_hdl(lchan->ts->trx);
 	struct msgb *msg = l1p_msgb_alloc();
+	int sapi = cmd->sapi;
+	int dir = cmd->dir;
 	GsmL1_MphActivateReq_t *act_req;
 	GsmL1_LogChParam_t *lch_par;
 
@@ -713,27 +755,91 @@ static int mph_send_activate_req(struct gsm_lchan *lchan, int sapi, int dir)
 	return l1if_req_compl(fl1h, msg, 0, lchan_act_compl_cb, lchan);
 }
 
-int lchan_activate(struct gsm_lchan *lchan)
+static void sapi_clear_queue(struct llist_head *queue)
+{
+	struct sapi_cmd *next, *tmp;
+
+	llist_for_each_entry_safe(next, tmp, queue, entry) {
+		llist_del(&next->entry);
+		talloc_free(next);
+	}
+}
+
+static int sapi_activate_cb(struct gsm_lchan *lchan, int status)
+{
+	struct femtol1_hdl *fl1h = trx_femtol1_hdl(lchan->ts->trx);
+
+	/* FIXME: Error handling */
+	if (status != GsmL1_Status_Success) {
+		lchan_set_state(lchan, LCHAN_S_BROKEN);
+		sapi_clear_queue(&lchan->sapi_cmds);
+		rsl_tx_chan_act_nack(lchan, RSL_ERR_EQUIPMENT_FAIL);
+		return -1;
+	}
+
+	if (!llist_empty(&lchan->sapi_cmds))
+		return 0;
+
+	if (lchan->state != LCHAN_S_ACT_REQ)
+		return 0;
+
+	struct gsm_time *time;
+	lchan_set_state(lchan, LCHAN_S_ACTIVE);
+	time = bts_model_get_time(lchan->ts->trx->bts);
+	rsl_tx_chan_act_ack(lchan, time);
+
+#warning "FIXME: Ciphering needs to be enqueued as well"
+	/* set the initial ciphering parameters for both directions */
+	l1if_set_ciphering(fl1h, lchan, 0);
+	l1if_set_ciphering(fl1h, lchan, 1);
+
+	return 0;
+}
+
+static void enqueue_sapi_act_cmd(struct gsm_lchan *lchan, int sapi, int dir)
+{
+	struct sapi_cmd *cmd = talloc_zero(lchan->ts->trx, struct sapi_cmd);
+	int start;
+
+	cmd->sapi = sapi;
+	cmd->dir = dir;
+	cmd->type = SAPI_CMD_ACTIVATE;
+	cmd->callback = sapi_activate_cb;
+
+	start = llist_empty(&lchan->sapi_cmds);
+
+	llist_add_tail(&cmd->entry, &lchan->sapi_cmds);
+
+	if (start)
+		mph_send_activate_req(lchan, cmd);
+}
+
+int lchan_activate(struct gsm_lchan *lchan, enum gsm_lchan_state lchan_state)
 {
 	struct femtol1_hdl *fl1h = trx_femtol1_hdl(lchan->ts->trx);
 	const struct lchan_sapis *s4l = &sapis_for_lchan[lchan->type];
 	unsigned int i;
 
+	lchan_set_state(lchan, lchan_state);
+
+	if (!llist_empty(&lchan->sapi_cmds))
+		LOGP(DL1C, LOGL_ERROR,
+			"%s Trying to activate lchan, but commands in queue\n",
+			gsm_lchan_name(lchan));
+
 	for (i = 0; i < s4l->num_sapis; i++) {
-		if (s4l->sapis[i].sapi == GsmL1_Sapi_Sch) {
+		int sapi = s4l->sapis[i].sapi;
+		int dir = s4l->sapis[i].dir;
+
+		if (sapi == GsmL1_Sapi_Sch) {
 			/* once we activate the SCH, we should get MPH-TIME.ind */
 			fl1h->alive_timer.cb = alive_timer_cb;
 			fl1h->alive_timer.data = fl1h;
 			fl1h->alive_prim_cnt = 0;
 			osmo_timer_schedule(&fl1h->alive_timer, 5, 0);
 		}
-		mph_send_activate_req(lchan, s4l->sapis[i].sapi, s4l->sapis[i].dir);
+		enqueue_sapi_act_cmd(lchan, sapi, dir);
 	}
-	lchan_set_state(lchan, LCHAN_S_ACT_REQ);
-
-	/* set the initial ciphering parameters for both directions */
-	l1if_set_ciphering(fl1h, lchan, 0);
-	l1if_set_ciphering(fl1h, lchan, 1);
 
 	lchan_init_lapdm(lchan);
 
@@ -1105,7 +1211,7 @@ int bts_model_rsl_chan_act(struct gsm_lchan *lchan, struct tlv_parsed *tp)
 	//uint8_t type = *TLVP_VAL(tp, RSL_IE_ACT_TYPE);
 
 	lchan->sacch_deact = 0;
-	lchan_activate(lchan);
+	lchan_activate(lchan, LCHAN_S_ACT_REQ);
 	return 0;
 }
 
