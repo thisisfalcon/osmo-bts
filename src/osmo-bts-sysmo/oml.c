@@ -38,6 +38,20 @@
 #include "l1_if.h"
 #include "femtobts.h"
 
+enum sapi_cmd_type {
+	SAPI_CMD_ACTIVATE,
+	SAPI_CMD_RELEASE,
+	SAPI_CMD_RELEASE_ALL,
+};
+
+struct sapi_cmd {
+	struct llist_head entry;
+	GsmL1_Sapi_t sapi;
+	GsmL1_Dir_t dir;
+	enum sapi_cmd_type type;
+	int (*callback)(struct gsm_lchan *lchan, int status);
+};
+
 static const enum GsmL1_LogChComb_t pchan_to_logChComb[_GSM_PCHAN_MAX] = {
 	[GSM_PCHAN_NONE]		= GsmL1_LogChComb_0,
 	[GSM_PCHAN_CCCH]		= GsmL1_LogChComb_IV,
