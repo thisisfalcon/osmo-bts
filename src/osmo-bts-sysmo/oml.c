@@ -42,7 +42,7 @@ enum sapi_cmd_type {
 	SAPI_CMD_ACTIVATE,
 	SAPI_CMD_RELEASE,
 	SAPI_CMD_RELEASE_ALL,
-	SAPI_CMD_CONFIG,
+	SAPI_CMD_CONFIG_CIPHERING,
 };
 
 struct sapi_cmd {
