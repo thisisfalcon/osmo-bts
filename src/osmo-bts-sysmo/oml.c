@@ -386,8 +386,10 @@ int oml_mo_rf_lock_chg(struct gsm_abis_mo *mo, uint8_t mute_state[8],
 		       int success)
 {
 	if (success) {
+		int rc;
 		int i;
 		int is_locked = 1;
+		int opstate, avstate;
 
 		for (i = 0; i < 8; ++i)
 			if (!mute_state[i])
@@ -396,7 +398,27 @@ int oml_mo_rf_lock_chg(struct gsm_abis_mo *mo, uint8_t mute_state[8],
 		mo->nm_state.administrative =
 			is_locked ? NM_STATE_LOCKED : NM_STATE_UNLOCKED;
 		mo->procedure_pending = 0;
-		return oml_mo_statechg_ack(mo);
+
+		/* If this fails it means abis_sendmsg() failed and oml_mo_state_chg()
+		 * will probably fail as well. Return directly */
+		rc = oml_mo_statechg_ack(mo);
+		if (rc < 0) {
+			LOGP(DL1C, LOGL_ERROR, "oml_mo_statechg_ack() failed with %i\n", rc);
+			return rc;
+		}
+
+		if (is_locked) {
+			opstate = NM_OPSTATE_DISABLED;
+			avstate = NM_AVSTATE_OFF_LINE;
+		} else {
+			opstate = NM_OPSTATE_ENABLED;
+			avstate = NM_AVSTATE_OK;
+		}
+		rc = oml_mo_state_chg(mo, opstate, avstate);
+		if (rc < 0)
+			LOGP(DL1C, LOGL_ERROR, "oml_mo_state_chg() failed with %i\n", rc);
+
+		return rc;
 	} else {
 		mo->procedure_pending = 0;
 		return oml_mo_statechg_nack(mo, NM_NACK_REQ_NOT_GRANT);
