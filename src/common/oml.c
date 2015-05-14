@@ -735,10 +735,20 @@ static int oml_rx_opstart(struct gsm_bts *bts, struct msgb *msg)
 	if (!mo || !obj)
 		return oml_fom_ack_nack(msg, NM_NACK_OBJINST_UNKN);
 
-	/* Step 2: Do some global dependency/consistency checking */
+	/* Step 2: Do some global dependency/consistency checking
+	 * The admin mode changes from commit c1f78e4de8d741c849b6
+	 * chage the way the operational attribute is handled.
+	 * When we get the admin unlocked command before the opstart the
+	 * operational will be enabled here....
+	 * FIXME: This should work differently, i.e. operational attribute should
+	 * not change before opstart was sent */
 	if (mo->nm_state.operational == NM_OPSTATE_ENABLED) {
-		LOGP(DOML, LOGL_NOTICE, "... automatic ACK, OP state already was Enabled\n");
-		return oml_mo_opstart_ack(mo);
+		if (mo->obj_class == NM_OC_RADIO_CARRIER) {
+			LOGP(DOML, LOGL_NOTICE, "OP state already was Enabled for radio carrier, calling opstart anyway\n");
+		} else {
+			LOGP(DOML, LOGL_NOTICE, "... automatic ACK, OP state already was Enabled (skipping opstart)\n");
+			return oml_mo_opstart_ack(mo);
+		}
 	}
 
 	/* Step 3: Ask BTS driver to apply the opstart */
