@@ -737,7 +737,7 @@ static int oml_rx_opstart(struct gsm_bts *bts, struct msgb *msg)
 
 	/* Step 2: Do some global dependency/consistency checking */
 	if (mo->nm_state.operational == NM_OPSTATE_ENABLED) {
-		DEBUGP(DOML, "... automatic ACK, OP state already was Enabled\n");
+		LOGP(DOML, LOGL_NOTICE, "... automatic ACK, OP state already was Enabled\n");
 		return oml_mo_opstart_ack(mo);
 	}
 
