@@ -44,6 +44,8 @@
 #include <osmo-bts/scheduler_backend.h>
 #include <virtphy/virtual_um.h>
 
+#define MODULO_HYPERFRAME 0
+
 static const char *gsmtap_hdr_stringify(const struct gsmtap_hdr *gh)
 {
 	static char buf[256];
@@ -81,6 +83,11 @@ static void tx_to_virt_um(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
 		gsmtap_chantype = GSMTAP_CHANNEL_PCH;
 	else
 		gsmtap_chantype = chantype_rsl2gsmtap(rsl_chantype, chdesc->link_id); /* the logical channel type */
+
+#if MODULO_HYPERFRAME
+	/* Restart fn after every superframe (26 * 51 frames) to simulate hyperframe overflow each 6 seconds. */
+	fn %= 26 * 51;
+#endif
 
 	outmsg = gsmtap_makemsg(l1t->trx->arfcn, timeslot, gsmtap_chantype,
 				subslot, fn, signal_dbm, snr, data, data_len);
