@@ -45,6 +45,8 @@
 #include <osmo-bts/vty.h>
 #include <osmo-bts/bts_model.h>
 #include <osmo-bts/l1sap.h>
+#include <osmo-bts/phy_link.h>
+#include <virtphy/virtual_um.h>
 
 /* dummy, since no direct dsp support */
 uint32_t trx_get_hlayer1(struct gsm_bts_trx *trx)
@@ -103,6 +105,10 @@ void bts_model_abis_close(struct gsm_bts *bts)
 
 void bts_model_phy_link_set_defaults(struct phy_link *plink)
 {
+	plink->u.virt.bts_mcast_group = DEFAULT_BTS_MCAST_GROUP;
+	plink->u.virt.bts_mcast_port = DEFAULT_BTS_MCAST_PORT;
+	plink->u.virt.ms_mcast_group = DEFAULT_MS_MCAST_GROUP;
+	plink->u.virt.ms_mcast_port = DEFAULT_MS_MCAST_PORT;
 }
 
 void bts_model_phy_instance_set_defaults(struct phy_instance *pinst)

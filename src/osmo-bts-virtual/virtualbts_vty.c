@@ -42,6 +42,7 @@
 #include <osmo-bts/phy_link.h>
 #include <osmo-bts/logging.h>
 #include <osmo-bts/vty.h>
+#include <virtphy/virtual_um.h>
 
 #define TRX_STR "Transceiver related commands\n" "TRX number\n"
 
@@ -68,16 +69,16 @@ void bts_model_config_write_phy(struct vty *vty, struct phy_link *plink)
 	if (plink->u.virt.mcast_dev)
 		vty_out(vty, " virtual-um net-device %s%s",
 			plink->u.virt.mcast_dev, VTY_NEWLINE);
-	if (plink->u.virt.ms_mcast_group)
+	if (plink->u.virt.ms_mcast_group != DEFAULT_BTS_MCAST_GROUP)
 		vty_out(vty, " virtual-um ms-multicast-group %s%s",
 			plink->u.virt.ms_mcast_group, VTY_NEWLINE);
-	if (plink->u.virt.ms_mcast_port)
+	if (plink->u.virt.ms_mcast_port != DEFAULT_BTS_MCAST_PORT)
 		vty_out(vty, " virtual-um ms-udp-port %u%s",
 			plink->u.virt.ms_mcast_port, VTY_NEWLINE);
-	if (plink->u.virt.bts_mcast_group)
+	if (plink->u.virt.bts_mcast_group != DEFAULT_MS_MCAST_GROUP)
 		vty_out(vty, " virtual-um bts-multicast-group %s%s",
 			plink->u.virt.bts_mcast_group, VTY_NEWLINE);
-	if (plink->u.virt.bts_mcast_port)
+	if (plink->u.virt.bts_mcast_port != DEFAULT_MS_MCAST_PORT)
 		vty_out(vty, " virtual-um bts-udp-port %u%s",
 			plink->u.virt.bts_mcast_port, VTY_NEWLINE);
 
