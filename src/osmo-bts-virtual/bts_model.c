@@ -22,6 +22,7 @@
 
 #include <osmocom/core/talloc.h>
 #include <osmocom/core/utils.h>
+#include <osmocom/codec/codec.h>
 
 #include <osmo-bts/gsm_data.h>
 #include <osmo-bts/phy_link.h>
@@ -33,6 +34,19 @@
 #include <osmo-bts/bts_model.h>
 #include <osmo-bts/handover.h>
 #include <osmo-bts/l1sap.h>
+
+/* TODO: check if dummy method is sufficient, else implement */
+int bts_model_lchan_deactivate(struct gsm_lchan *lchan)
+{
+	return -1;
+}
+
+/* TODO: check if dummy method is sufficient, else implement */
+int osmo_amr_rtp_dec(const uint8_t *rtppayload, int payload_len, uint8_t *cmr,
+		     int8_t *cmi, enum osmo_amr_type *ft, enum osmo_amr_quality *bfi, int8_t *sti)
+{
+	return -1;
+}
 
 int bts_model_trx_close(struct gsm_bts_trx *trx)
 {
@@ -53,6 +67,20 @@ int bts_model_check_oml(struct gsm_bts *bts, uint8_t msg_type,
 
 static uint8_t vbts_set_bts(struct gsm_bts *bts)
 {
+	struct gsm_bts_trx *trx;
+	uint8_t tn;
+
+	llist_for_each_entry(trx, &bts->trx_list, list) {
+		oml_mo_state_chg(&trx->mo, NM_OPSTATE_DISABLED, NM_AVSTATE_OK);
+		oml_mo_state_chg(&trx->bb_transc.mo, -1, NM_AVSTATE_OK);
+
+		for (tn = 0; tn < TRX_NR_TS; tn++)
+			oml_mo_state_chg(&trx->ts[tn].mo, NM_OPSTATE_DISABLED, NM_AVSTATE_DEPENDENCY);
+
+		/* report availability of trx to the bts. this will trigger the rsl connection */
+		oml_mo_tx_sw_act_rep(&trx->mo);
+		oml_mo_tx_sw_act_rep(&trx->bb_transc.mo);
+	}
 	return 0;
 }
 
@@ -93,32 +121,24 @@ int bts_model_apply_oml(struct gsm_bts *bts, struct msgb *msg,
 	return oml_fom_ack_nack(msg, cause);
 }
 
-int bts_model_opstart(struct gsm_bts *bts, struct gsm_abis_mo *mo,
-		      void *obj)
+/* MO: TS 12.21 Managed Object */
+int bts_model_opstart(struct gsm_bts *bts, struct gsm_abis_mo *mo, void *obj)
 {
 	int rc;
 
 	switch (mo->obj_class) {
 	case NM_OC_RADIO_CARRIER:
 	case NM_OC_CHANNEL:
+	case NM_OC_SITE_MANAGER:
+	case NM_OC_BASEB_TRANSC:
+	case NM_OC_BTS:
 		oml_mo_state_chg(mo, NM_OPSTATE_ENABLED, NM_AVSTATE_OK);
 		rc = oml_mo_opstart_ack(mo);
 		break;
-	case NM_OC_BTS:
-	case NM_OC_SITE_MANAGER:
-	case NM_OC_BASEB_TRANSC:
+		/* TODO: gprs support */
 	case NM_OC_GPRS_NSE:
 	case NM_OC_GPRS_CELL:
 	case NM_OC_GPRS_NSVC:
-		oml_mo_state_chg(mo, NM_OPSTATE_ENABLED, -1);
-		rc = oml_mo_opstart_ack(mo);
-		if (mo->obj_class == NM_OC_BTS) {
-			oml_mo_state_chg(&bts->mo, -1, NM_AVSTATE_OK);
-			oml_mo_state_chg(&bts->gprs.nse.mo, -1, NM_AVSTATE_OK);
-			oml_mo_state_chg(&bts->gprs.cell.mo, -1, NM_AVSTATE_OK);
-			oml_mo_state_chg(&bts->gprs.nsvc[0].mo, -1, NM_AVSTATE_OK);
-		}
-		break;
 	default:
 		rc = oml_mo_opstart_nack(mo, NM_NACK_OBJCLASS_NOTSUPP);
 	}

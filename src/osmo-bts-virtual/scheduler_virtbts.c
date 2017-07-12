@@ -1,6 +1,7 @@
 /* Scheduler worker functiosn for Virtua OsmoBTS */
 
-/* (C) 2015 by Harald Welte <laforge@gnumonks.org>
+/* (C) 2015-2017 by Harald Welte <laforge@gnumonks.org>
+ * (C) 2017 Sebastian Stumpf <sebastian.stumpf87@googlemail.com>
  *
  * All Rights Reserved
  *
@@ -28,6 +29,8 @@
 #include <osmocom/core/talloc.h>
 #include <osmocom/core/bits.h>
 #include <osmocom/core/gsmtap_util.h>
+#include <osmocom/core/gsmtap.h>
+#include <osmocom/gsm/rsl.h>
 
 #include <osmocom/netif/rtp.h>
 
@@ -39,31 +42,58 @@
 #include <osmo-bts/amr.h>
 #include <osmo-bts/scheduler.h>
 #include <osmo-bts/scheduler_backend.h>
+#include <virtphy/virtual_um.h>
 
-#include "virtual_um.h"
+static const char *gsmtap_hdr_stringify(const struct gsmtap_hdr *gh)
+{
+	static char buf[256];
+	snprintf(buf, sizeof(buf), "(ARFCN=%u, ts=%u, ss=%u, type=%u/%u)",
+		 gh->arfcn & GSMTAP_ARFCN_MASK, gh->timeslot, gh->sub_slot, gh->type, gh->sub_type);
+	return buf;
+}
 
-extern void *tall_bts_ctx;
-
-
-
+/**
+ * Send a message over the virtual um interface.
+ * This will at first wrap the msg with a GSMTAP header and then write it to the declared multicast socket.
+ * TODO: we might want to remove unused argument uint8_t tn
+ */
 static void tx_to_virt_um(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
 			  enum trx_chan_type chan, struct msgb *msg)
 {
 	const struct trx_chan_desc *chdesc = &trx_chan_desc[chan];
-	uint8_t ss = 0; //FIXME(chdesc);
-	uint8_t gsmtap_chan;
-	struct msgb *outmsg;
+	struct msgb *outmsg; /* msg to send with gsmtap header prepended */
+	uint16_t arfcn = l1t->trx->arfcn; /* ARFCN of the tranceiver the message is send with */
+	uint8_t signal_dbm = 63; // signal strength, 63 is best
+	uint8_t snr = 63; // signal noise ratio, 63 is best
+	uint8_t *data = msgb_l2(msg); /* data to transmit (whole message without l1 header) */
+	uint8_t data_len = msgb_l2len(msg); /* length of data */
+	uint8_t rsl_chantype; /* RSL chan type (TS 08.58, 9.3.1) */
+	uint8_t subslot; /* multiframe subslot to send msg in (tch -> 0-26, bcch/ccch -> 0-51) */
+	uint8_t timeslot; /* TDMA timeslot to send in (0-7) */
+	uint8_t gsmtap_chantype; /* the GSMTAP channel */
 
-	gsmtap_chan = chantype_rsl2gsmtap(chdesc->chan_nr, chdesc->link_id);
-	outmsg = gsmtap_makemsg(l1t->trx->arfcn, tn, gsmtap_chan, ss, fn,
-				0, 0, msgb_l2(msg), msgb_l2len(msg));
+	rsl_dec_chan_nr(chdesc->chan_nr, &rsl_chantype, &subslot, &timeslot);
+	/* in Osmocom, AGCH is only sent on ccch block 0. no idea why. this seems to cause false GSMTAP channel
+	 * types for agch and pch. */
+	if (rsl_chantype == RSL_CHAN_PCH_AGCH && L1SAP_FN2CCCHBLOCK(fn) == 0)
+		gsmtap_chantype = GSMTAP_CHANNEL_PCH;
+	else
+		gsmtap_chantype = chantype_rsl2gsmtap(rsl_chantype, chdesc->link_id); /* the logical channel type */
+
+	outmsg = gsmtap_makemsg(l1t->trx->arfcn, timeslot, gsmtap_chantype,
+				subslot, fn, signal_dbm, snr, data, data_len);
 	if (outmsg) {
 		struct phy_instance *pinst = trx_phy_instance(l1t->trx);
-		struct virt_um_inst *virt_um = pinst->phy_link->u.virt.virt_um;
-		virt_um_write_msg(virt_um, outmsg);
-	}
+		struct gsmtap_hdr *gh = (struct gsmtap_hdr *)msgb_data(outmsg);
 
-	/* free message */
+		if (virt_um_write_msg(pinst->phy_link->u.virt.virt_um, outmsg) == -1)
+			LOGP(DL1P, LOGL_ERROR, "%s GSMTAP msg could not send to virtual Um\n", gsmtap_hdr_stringify(gh));
+		else
+			DEBUGP(DL1C, "%s Sending GSMTAP message to virtual Um\n", gsmtap_hdr_stringify(gh));
+	} else
+		LOGP(DL1C, LOGL_ERROR, "GSMTAP msg could not be created!\n");
+
+	/* free incoming message */
 	msgb_free(msg);
 }
 
@@ -73,25 +103,25 @@ static void tx_to_virt_um(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
 
 /* an IDLE burst returns nothing. on C0 it is replaced by dummy burst */
 ubit_t *tx_idle_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid)
+	enum trx_chan_type chan, uint8_t bid, uint16_t *nbits)
 {
 	return NULL;
 }
 
 ubit_t *tx_fcch_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid)
+	enum trx_chan_type chan, uint8_t bid, uint16_t *nbits)
 {
 	return NULL;
 }
 
 ubit_t *tx_sch_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid)
+	enum trx_chan_type chan, uint8_t bid, uint16_t *nbits)
 {
 	return NULL;
 }
 
 ubit_t *tx_data_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid)
+	enum trx_chan_type chan, uint8_t bid, uint16_t *nbits)
 {
 	struct l1sched_ts *l1ts = l1sched_trx_get_ts(l1t, tn);
 	struct gsm_bts_trx_ts *ts = &l1t->trx->ts[tn];
@@ -122,13 +152,14 @@ got_msg:
 		goto no_msg;
 	}
 
+	/* transmit the msg received on dl from bsc to layer1 (virt Um) */
 	tx_to_virt_um(l1t, tn, fn, chan, msg);
 
 	return NULL;
 }
 
 ubit_t *tx_pdtch_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid)
+	enum trx_chan_type chan, uint8_t bid, uint16_t *nbits)
 {
 	struct l1sched_ts *l1ts = l1sched_trx_get_ts(l1t, tn);
 	struct gsm_bts_trx_ts *ts = &l1t->trx->ts[tn];
@@ -388,7 +419,7 @@ send_frame:
 }
 
 ubit_t *tx_tchf_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid)
+	enum trx_chan_type chan, uint8_t bid, uint16_t *nbits)
 {
 	struct msgb *msg_tch = NULL, *msg_facch = NULL;
 	struct l1sched_ts *l1ts = l1sched_trx_get_ts(l1t, tn);
@@ -422,7 +453,7 @@ send_burst:
 }
 
 ubit_t *tx_tchh_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid)
+	enum trx_chan_type chan, uint8_t bid, uint16_t *nbits)
 {
 	struct msgb *msg_tch = NULL, *msg_facch = NULL;
 	struct l1sched_ts *l1ts = l1sched_trx_get_ts(l1t, tn);
@@ -475,37 +506,37 @@ send_burst:
  * towards receiving bursts */
 
 int rx_rach_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid, sbit_t *bits, int8_t rssi,
-	float toa)
+	enum trx_chan_type chan, uint8_t bid, sbit_t *bits, uint16_t nbits,
+	int8_t rssi, float toa)
 {
 	return 0;
 }
 
 /*! \brief a single burst was received by the PHY, process it */
 int rx_data_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid, sbit_t *bits, int8_t rssi,
-	float toa)
+	enum trx_chan_type chan, uint8_t bid, sbit_t *bits, uint16_t nbits,
+	int8_t rssi, float toa)
 {
 	return 0;
 }
 
 int rx_pdtch_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid, sbit_t *bits, int8_t rssi,
-	float toa)
+	enum trx_chan_type chan, uint8_t bid, sbit_t *bits, uint16_t nbits,
+	int8_t rssi, float toa)
 {
 	return 0;
 }
 
 int rx_tchf_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid, sbit_t *bits, int8_t rssi,
-	float toa)
+	enum trx_chan_type chan, uint8_t bid, sbit_t *bits, uint16_t nbits,
+	int8_t rssi, float toa)
 {
 	return 0;
 }
 
 int rx_tchh_fn(struct l1sched_trx *l1t, uint8_t tn, uint32_t fn,
-	enum trx_chan_type chan, uint8_t bid, sbit_t *bits, int8_t rssi,
-	float toa)
+	enum trx_chan_type chan, uint8_t bid, sbit_t *bits, uint16_t nbits,
+	int8_t rssi, float toa)
 {
 	return 0;
 }
@@ -526,20 +557,33 @@ static int vbts_sched_fn(struct gsm_bts *bts, uint32_t fn)
 	struct gsm_bts_trx *trx;
 
 	/* send time indication */
+	/* update model with new frame number, lot of stuff happening, measurements of timeslots */
+	/* saving GSM time in BTS model, and more */
 	l1if_mph_time_ind(bts, fn);
 
 	/* advance the frame number? */
-
 	llist_for_each_entry(trx, &bts->trx_list, list) {
 		struct phy_instance *pinst = trx_phy_instance(trx);
 		struct l1sched_trx *l1t = &pinst->u.virt.sched;
 		int tn;
+		uint16_t nbits;
 
+		/* do for each of the 8 timeslots */
 		for (tn = 0; tn < ARRAY_SIZE(l1t->ts); tn++) {
-			/* Generate RTS.ind to higher layers */
+			/* Generate RTS indication to higher layers */
+			/* This will basically do 2 things (check l1_if:bts_model_l1sap_down):
+			 * 1) Get pending messages from layer 2 (from the lapdm queue)
+			 * 2) Process the messages
+			 *    --> Handle and process non-transparent RSL-Messages (activate channel, )
+			 *    --> Forward transparent RSL-DATA-Messages to the ms by appending them to
+			 *        the l1-dl-queue */
 			_sched_rts(l1t, tn, (fn + RTS_ADVANCE) % GSM_HYPERFRAME);
 			/* schedule transmit backend functions */
-			_sched_dl_burst(l1t, tn, fn);
+			/* Process data in the l1-dlqueue and forward it
+			 * to MS */
+			/* the returned bits are not used here, the routines called will directly forward their
+			 * bits to the virt Um */
+			_sched_dl_burst(l1t, tn, fn, &nbits);
 		}
 	}
 
@@ -556,24 +600,33 @@ static void vbts_fn_timer_cb(void *data)
 
 	gettimeofday(&tv_now, NULL);
 
-	elapsed_us = (tv_now.tv_sec - tv_clock->tv_sec) * 1000000 +
-		     (tv_now.tv_usec - tv_clock->tv_usec);
+	/* check how much time elapsed till the last timer callback call.
+	 * this value should be about 4.615 ms (a bit greater) as this is the scheduling interval */
+	elapsed_us = (tv_now.tv_sec - tv_clock->tv_sec) * 1000000
+	                + (tv_now.tv_usec - tv_clock->tv_usec);
 
-	if (elapsed_us > 2*FRAME_DURATION_uS)
+	// not so good somehow a lot of time passed between two timer callbacks
+	if (elapsed_us > 2 *FRAME_DURATION_uS)
 		LOGP(DL1P, LOGL_NOTICE, "vbts_fn_timer_cb after %d us\n", elapsed_us);
 
+	/* schedule the current frame/s (fn = frame number)
+	 * this loop will be called at least once, but can also be executed
+	 * multiple times if more than one frame duration (4615us) passed till the last callback */
 	while (elapsed_us > FRAME_DURATION_uS / 2) {
 		const struct timeval tv_frame = {
 			.tv_sec = 0,
 			.tv_usec = FRAME_DURATION_uS,
 		};
 		timeradd(tv_clock, &tv_frame, tv_clock);
+		/* increment the frame number in the BTS model instance */
 		btsb->vbts.last_fn = (btsb->vbts.last_fn + 1) % GSM_HYPERFRAME;
 		vbts_sched_fn(bts, btsb->vbts.last_fn);
 		elapsed_us -= FRAME_DURATION_uS;
 	}
 
 	/* re-schedule the timer */
+	/* timer is set to frame duration - elapsed time to guarantee that this cb method will be
+	 * periodically executed every 4.615ms */
 	osmo_timer_schedule(&btsb->vbts.fn_timer, 0, FRAME_DURATION_uS - elapsed_us);
 }
 
@@ -588,6 +641,7 @@ int vbts_sched_start(struct gsm_bts *bts)
 	btsb->vbts.fn_timer.data = bts;
 
 	gettimeofday(&btsb->vbts.tv_clock, NULL);
+	/* trigger the first timer after 4615us (a frame duration) */
 	osmo_timer_schedule(&btsb->vbts.fn_timer, 0, FRAME_DURATION_uS);
 
 	return 0;
