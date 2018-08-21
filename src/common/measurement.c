@@ -623,7 +623,7 @@ void lchan_meas_process_measurement(struct gsm_lchan *lchan, struct bts_ul_meas 
 		 * and add the uplink measurement we got as the first sample
 		 * of a new interval */
 		lchan_meas_check_compute(lchan, fn_missed_end);
-		lchan_new_ul_meas(lchan, ulm, fn);
+		//	lchan_new_ul_meas(lchan, ulm, fn);
 	} else {
 		/* This is the normal case, we first add the measurement sample
 		 * to the current interva and run the check+computation */
