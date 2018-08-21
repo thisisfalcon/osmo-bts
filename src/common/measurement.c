@@ -617,19 +617,19 @@ void lchan_meas_process_measurement(struct gsm_lchan *lchan, struct bts_ul_meas 
 	 * the last and the current call of this function */
 	missed_end = is_meas_overdue(lchan, &fn_missed_end, fn);
 
-//	if (missed_end) {
-//		DEBUGPFN(DMEAS, fn, "%s measurement interval ending missed, catching up...\n", gsm_lchan_name(lchan));
+	if (missed_end) {
+		DEBUGPFN(DMEAS, fn, "%s measurement interval ending missed, catching up...\n", gsm_lchan_name(lchan));
 		/* We missed the end of the interval. Do the computation now
 		 * and add the uplink measurement we got as the first sample
 		 * of a new interval */
-//		lchan_meas_check_compute(lchan, fn_missed_end);
-//		lchan_new_ul_meas(lchan, ulm, fn);
-//	} else {
+		lchan_meas_check_compute(lchan, fn_missed_end);
+		//	lchan_new_ul_meas(lchan, ulm, fn);
+	} else {
 		/* This is the normal case, we first add the measurement sample
 		 * to the current interva and run the check+computation */
 		lchan_new_ul_meas(lchan, ulm, fn);
 		lchan_meas_check_compute(lchan, fn);
-//	}
+	}
 }
 
 /* Reset all measurement related struct members to their initial values. This
