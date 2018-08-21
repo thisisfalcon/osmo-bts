@@ -615,7 +615,7 @@ void lchan_meas_process_measurement(struct gsm_lchan *lchan, struct bts_ul_meas 
 	 * then the associated measurement indication is also skipped. Because
 	 * of this we must check now if the measurement interval ended between
 	 * the last and the current call of this function */
-//	missed_end = is_meas_overdue(lchan, &fn_missed_end, fn);
+	missed_end = is_meas_overdue(lchan, &fn_missed_end, fn);
 
 //	if (missed_end) {
 //		DEBUGPFN(DMEAS, fn, "%s measurement interval ending missed, catching up...\n", gsm_lchan_name(lchan));
